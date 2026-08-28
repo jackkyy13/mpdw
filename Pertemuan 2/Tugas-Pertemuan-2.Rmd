@@ -1,1 +1,383 @@
+---
+title: "Tugas Pertemuan 2 - Analisis Deret Waktu Beijing Air Quality (Periode 389-582)"
+author: "Daffa Faaiz Al-Zakkii / M0401241027"
+output:
+  html_document: 
+    theme: lumen
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
 
+## 1. Library/Packages
+
+```{r}
+library(forecast)
+library(graphics)
+library(TTR)
+library(TSA)
+library(rio)
+library(ggplot2)
+```
+
+## 2. Impor Data
+
+```{r}
+data_full <- import("Beijing_Air_Quality_Rapi.csv")
+
+data_beijing <- data_full[data_full$Periode >= 389 & data_full$Periode <= 582, ]
+
+data_beijing$Periode_Asli <- data_beijing$Periode
+data_beijing$Periode <- 1:nrow(data_beijing)
+
+head(data_beijing)
+tail(data_beijing)
+```
+
+# 3. Eksplorasi Data
+
+```{r}
+str(data_beijing)
+dim(data_beijing)
+summary(data_beijing$Count)
+```
+
+## 4. Mengubah Data Menjadi Data Deret Waktu
+
+Variabel yang dipakai sebagai `Yt` adalah **Count** (jumlah pengamatan kualitas udara
+per periode). Data diasumsikan memiliki pola musiman mingguan sehingga digunakan
+`frequency = 7` agar metode Holt-Winters dapat diterapkan.
+
+```{r}
+beijing.ts <- ts(data_beijing$Count, frequency = 7)
+summary(beijing.ts)
+```
+
+## 5. Plot Data Deret Waktu
+
+```{r}
+ts.plot(beijing.ts, xlab = "Periode (minggu)", ylab = "Count",
+        main = "Time Series Plot Beijing Air Quality (Periode 389-582)")
+points(beijing.ts, pch = 20, cex = 0.4)
+
+dev.copy(png, "plot_beijing.png")
+dev.off()
+```
+
+## 6. Pembagian Data Latih dan Data Uji (80:20)
+
+```{r}
+n <- nrow(data_beijing)
+n_train <- floor(0.8 * n)
+
+training <- data_beijing[1:n_train, ]
+testing  <- data_beijing[(n_train + 1):n, ]
+
+train.ts <- ts(training$Count, frequency = 7)
+test.ts  <- ts(testing$Count, frequency = 7)
+
+cat("Jumlah data total :", n, "\n")
+cat("Jumlah data latih :", n_train, "\n")
+cat("Jumlah data uji   :", n - n_train, "\n")
+```
+
+### Eksplorasi Data Latih & Data Uji
+
+```{r}
+plot(beijing.ts, col = "red", main = "Plot Semua Data")
+points(beijing.ts, pch = 20, cex = 0.3)
+
+plot(train.ts, col = "blue", main = "Plot Data Latih")
+points(train.ts, pch = 20, cex = 0.3)
+
+plot(test.ts, col = "darkgreen", main = "Plot Data Uji")
+points(test.ts, pch = 20, cex = 0.3)
+```
+
+```{r}
+ggplot() +
+  geom_line(data = training, aes(x = Periode, y = Count, col = "Data Latih")) +
+  geom_line(data = testing,  aes(x = Periode, y = Count, col = "Data Uji")) +
+  labs(x = "Periode", y = "Count", color = "Keterangan:") +
+  scale_colour_manual(breaks = c("Data Latih", "Data Uji"),
+                       values = c("Data Latih" = "blue", "Data Uji" = "red")) +
+  theme_bw() + theme(legend.position = "bottom")
+```
+
+## 7. Single Moving Average (SMA)
+
+```{r}
+m <- 5
+data.sma <- SMA(train.ts, n = m)
+data.ramal <- c(NA, data.sma)
+h <- length(test.ts)
+ramal.sma.h <- rep(data.ramal[length(data.ramal)], h)
+
+data.gab.sma <- cbind(
+  aktual    = c(data_beijing$Count),
+  pemulusan = c(data.sma, rep(NA, h)),
+  ramalan   = c(data.ramal, ramal.sma.h)
+)
+tail(data.gab.sma, 10)
+```
+
+```{r}
+ts.plot(beijing.ts, xlab = "Periode", ylab = "Count",
+        main = paste("SMA n =", m, "- Beijing Air Quality"))
+lines(data.gab.sma[, 2], col = "green", lwd = 2)
+lines(data.gab.sma[, 3], col = "red", lwd = 2)
+legend("topleft", c("Data Aktual", "Data Pemulusan", "Data Peramalan"),
+       lty = 1, col = c("black", "green", "red"), cex = 0.6)
+```
+
+### Akurasi SMA
+
+```{r}
+error_train.sma <- train.ts - data.ramal[1:length(train.ts)]
+idx_train <- (m + 1):length(train.ts)
+
+SSE_train.sma  <- sum(error_train.sma[idx_train]^2)
+MSE_train.sma  <- mean(error_train.sma[idx_train]^2)
+RMSE_train.sma <- sqrt(MSE_train.sma)
+MAPE_train.sma <- mean(abs(error_train.sma[idx_train] / train.ts[idx_train]) * 100)
+
+error_test.sma  <- test.ts - ramal.sma.h
+SSE_test.sma  <- sum(error_test.sma^2)
+MSE_test.sma  <- mean(error_test.sma^2)
+RMSE_test.sma <- sqrt(MSE_test.sma)
+MAPE_test.sma <- mean(abs(error_test.sma / test.ts) * 100)
+
+akurasi.sma <- data.frame(
+  Data = c("Latih", "Uji"),
+  SSE  = c(SSE_train.sma, SSE_test.sma),
+  MSE  = c(MSE_train.sma, MSE_test.sma),
+  RMSE = c(RMSE_train.sma, RMSE_test.sma),
+  MAPE = c(MAPE_train.sma, MAPE_test.sma)
+)
+akurasi.sma
+```
+
+## 8. Double Moving Average (DMA)
+
+```{r}
+dma <- SMA(data.sma, n = m)
+At  <- 2 * data.sma - dma
+Bt  <- (2 / (m - 1)) * (data.sma - dma)
+data.ramal2 <- c(NA, At + Bt)
+
+f <- numeric(h)
+for (i in 1:h) {
+  f[i] <- At[length(At)] + Bt[length(Bt)] * i
+}
+
+data.gab.dma <- cbind(
+  aktual     = c(data_beijing$Count),
+  pemulusan1 = c(data.sma, rep(NA, h)),
+  pemulusan2 = c(dma, rep(NA, h)),
+  ramalan    = c(data.ramal2, f)
+)
+tail(data.gab.dma, 10)
+```
+
+```{r}
+ts.plot(beijing.ts, xlab = "Periode", ylab = "Count",
+        main = paste("DMA n =", m, "- Beijing Air Quality"))
+lines(data.gab.dma[, 3], col = "green", lwd = 2)
+lines(data.gab.dma[, 4], col = "red", lwd = 2)
+legend("topleft", c("Data Aktual", "Data Pemulusan", "Data Peramalan"),
+       lty = 1, col = c("black", "green", "red"), cex = 0.6)
+```
+
+### Akurasi DMA
+
+```{r}
+error_train.dma <- train.ts - data.ramal2[1:length(train.ts)]
+idx_train2 <- (2 * m):length(train.ts)
+
+SSE_train.dma  <- sum(error_train.dma[idx_train2]^2)
+MSE_train.dma  <- mean(error_train.dma[idx_train2]^2)
+RMSE_train.dma <- sqrt(MSE_train.dma)
+MAPE_train.dma <- mean(abs(error_train.dma[idx_train2] / train.ts[idx_train2]) * 100)
+
+error_test.dma  <- test.ts - f
+SSE_test.dma  <- sum(error_test.dma^2)
+MSE_test.dma  <- mean(error_test.dma^2)
+RMSE_test.dma <- sqrt(MSE_test.dma)
+MAPE_test.dma <- mean(abs(error_test.dma / test.ts) * 100)
+
+akurasi.dma <- data.frame(
+  Data = c("Latih", "Uji"),
+  SSE  = c(SSE_train.dma, SSE_test.dma),
+  MSE  = c(MSE_train.dma, MSE_test.dma),
+  RMSE = c(RMSE_train.dma, RMSE_test.dma),
+  MAPE = c(MAPE_train.dma, MAPE_test.dma)
+)
+akurasi.dma
+```
+
+## 9. Single Exponential Smoothing (SES)
+
+```{r}
+ses.opt <- ses(train.ts, h = h, alpha = NULL)
+ramalan.ses <- forecast(ses.opt, h = h)
+plot(ramalan.ses)
+ses.opt$model
+```
+
+### Akurasi SES
+
+```{r}
+SSE_train.ses  <- ses.opt$model$SSE
+MSE_train.ses  <- SSE_train.ses / length(train.ts)
+RMSE_train.ses <- sqrt(MSE_train.ses)
+
+error_test.ses <- test.ts - as.numeric(ramalan.ses$mean)
+SSE_test.ses  <- sum(error_test.ses^2)
+MSE_test.ses  <- mean(error_test.ses^2)
+RMSE_test.ses <- sqrt(MSE_test.ses)
+MAPE_test.ses <- mean(abs(error_test.ses / test.ts) * 100)
+
+akurasi.ses <- data.frame(
+  Data = c("Latih", "Uji"),
+  SSE  = c(SSE_train.ses, SSE_test.ses),
+  MSE  = c(MSE_train.ses, MSE_test.ses),
+  RMSE = c(RMSE_train.ses, RMSE_test.ses),
+  MAPE = c(NA, MAPE_test.ses)
+)
+akurasi.ses
+```
+
+## 10. Double Exponential Smoothing (DES - Holt)
+
+```{r}
+des.opt <- holt(train.ts, h = h, alpha = NULL, beta = NULL)
+ramalan.des <- forecast(des.opt, h = h)
+plot(ramalan.des)
+des.opt$model
+```
+
+### Akurasi DES
+
+```{r}
+SSE_train.des  <- sum(des.opt$residuals^2, na.rm = TRUE)
+MSE_train.des  <- mean(des.opt$residuals^2, na.rm = TRUE)
+RMSE_train.des <- sqrt(MSE_train.des)
+
+error_test.des <- test.ts - as.numeric(ramalan.des$mean)
+SSE_test.des  <- sum(error_test.des^2)
+MSE_test.des  <- mean(error_test.des^2)
+RMSE_test.des <- sqrt(MSE_test.des)
+MAPE_test.des <- mean(abs(error_test.des / test.ts) * 100)
+
+akurasi.des <- data.frame(
+  Data = c("Latih", "Uji"),
+  SSE  = c(SSE_train.des, SSE_test.des),
+  MSE  = c(MSE_train.des, MSE_test.des),
+  RMSE = c(RMSE_train.des, RMSE_test.des),
+  MAPE = c(NA, MAPE_test.des)
+)
+akurasi.des
+```
+
+## 11. Holt-Winters (HW)
+
+Karena data diasumsikan memiliki pola musiman mingguan (`frequency = 7`), metode
+Holt-Winters diterapkan menggunakan komponen level, tren, dan musiman. Dicoba kedua
+jenis musiman (aditif dan multiplikatif) lalu dipilih berdasarkan akurasi data uji.
+
+```{r}
+hw.aditif <- hw(train.ts, seasonal = "additive", h = h)
+hw.multi  <- hw(train.ts, seasonal = "multiplicative", h = h)
+
+plot(hw.aditif, main = "Holt-Winters Aditif - Beijing Air Quality")
+plot(hw.multi,  main = "Holt-Winters Multiplikatif - Beijing Air Quality")
+
+hw.aditif$model
+hw.multi$model
+```
+
+### Akurasi Holt-Winters
+
+```{r}
+# --- HW Aditif ---
+SSE_train.hwA  <- sum(hw.aditif$residuals^2, na.rm = TRUE)
+MSE_train.hwA  <- mean(hw.aditif$residuals^2, na.rm = TRUE)
+RMSE_train.hwA <- sqrt(MSE_train.hwA)
+
+error_test.hwA <- test.ts - as.numeric(hw.aditif$mean)
+SSE_test.hwA  <- sum(error_test.hwA^2)
+MSE_test.hwA  <- mean(error_test.hwA^2)
+RMSE_test.hwA <- sqrt(MSE_test.hwA)
+MAPE_test.hwA <- mean(abs(error_test.hwA / test.ts) * 100)
+
+# --- HW Multiplikatif ---
+SSE_train.hwM  <- sum(hw.multi$residuals^2, na.rm = TRUE)
+MSE_train.hwM  <- mean(hw.multi$residuals^2, na.rm = TRUE)
+RMSE_train.hwM <- sqrt(MSE_train.hwM)
+
+error_test.hwM <- test.ts - as.numeric(hw.multi$mean)
+SSE_test.hwM  <- sum(error_test.hwM^2)
+MSE_test.hwM  <- mean(error_test.hwM^2)
+RMSE_test.hwM <- sqrt(MSE_test.hwM)
+MAPE_test.hwM <- mean(abs(error_test.hwM / test.ts) * 100)
+
+akurasi.hw <- data.frame(
+  Model = c("HW Aditif - Latih", "HW Aditif - Uji",
+            "HW Multiplikatif - Latih", "HW Multiplikatif - Uji"),
+  SSE  = c(SSE_train.hwA, SSE_test.hwA, SSE_train.hwM, SSE_test.hwM),
+  MSE  = c(MSE_train.hwA, MSE_test.hwA, MSE_train.hwM, MSE_test.hwM),
+  RMSE = c(RMSE_train.hwA, RMSE_test.hwA, RMSE_train.hwM, RMSE_test.hwM),
+  MAPE = c(NA, MAPE_test.hwA, NA, MAPE_test.hwM)
+)
+akurasi.hw
+
+if (MAPE_test.hwA <= MAPE_test.hwM) {
+  SSE_test.hw  <- SSE_test.hwA
+  MSE_test.hw  <- MSE_test.hwA
+  RMSE_test.hw <- RMSE_test.hwA
+  MAPE_test.hw <- MAPE_test.hwA
+  jenis.hw <- "Aditif"
+} else {
+  SSE_test.hw  <- SSE_test.hwM
+  MSE_test.hw  <- MSE_test.hwM
+  RMSE_test.hw <- RMSE_test.hwM
+  MAPE_test.hw <- MAPE_test.hwM
+  jenis.hw <- "Multiplikatif"
+}
+cat("Jenis Holt-Winters terbaik:", jenis.hw)
+```
+
+## 12. Perbandingan Seluruh Metode (Data Uji)
+
+```{r}
+perbandingan <- data.frame(
+  Metode = c("SMA", "DMA", "SES", "DES", paste("Holt-Winters", jenis.hw)),
+  SSE  = c(SSE_test.sma, SSE_test.dma, SSE_test.ses, SSE_test.des, SSE_test.hw),
+  MSE  = c(MSE_test.sma, MSE_test.dma, MSE_test.ses, MSE_test.des, MSE_test.hw),
+  RMSE = c(RMSE_test.sma, RMSE_test.dma, RMSE_test.ses, RMSE_test.des, RMSE_test.hw),
+  MAPE = c(MAPE_test.sma, MAPE_test.dma, MAPE_test.ses, MAPE_test.des, MAPE_test.hw)
+)
+perbandingan <- perbandingan[order(perbandingan$MAPE), ]
+perbandingan
+```
+
+```{r}
+metode_terbaik <- perbandingan$Metode[1]
+cat("Metode dengan MAPE data uji terkecil (terbaik):", metode_terbaik)
+```
+
+## 13. Kesimpulan
+
+```{r}
+perbandingan
+```
+
+Metode **`r metode_terbaik`** menghasilkan nilai MAPE data uji paling kecil dibandingkan
+metode lainnya (SMA, DMA, SES, DES, dan Holt-Winters), sehingga dipilih sebagai metode
+pemulusan terbaik untuk data Beijing Air Quality pada rentang periode 389-582. Nilai MAPE
+yang kecil menunjukkan bahwa rata-rata persentase kesalahan peramalan metode ini terhadap
+data uji paling rendah, artinya hasil ramalannya paling mendekati nilai aktual dibandingkan
+metode-metode lain yang dicoba.
