@@ -1,0 +1,384 @@
+---
+title: "Tugas Pertemuan 3 - Regresi dengan Peubah Lag"
+subtitle: "Metode Peramalan Deret Waktu STA1341"
+author: "Daffa Faaiz Al-Zakkii | M0401241027"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    number_sections: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Persiapan Package
+
+```{r}
+library(readr)
+library(dynlm)      
+library(lmtest)      
+library(MLmetrics)   
+library(ggplot2)      
+```
+
+# Impor dan Eksplorasi Data
+
+Data yang dipakai adalah data kualitas udara New Delhi per jam `NewDelhi_Air_quality.csv`.
+
+```{r}
+data <- read.csv("D:\\Downloads\\NewDelhi_Air_quality.csv")
+str(data)
+```
+
+Data terdiri dari 72 observasi per jam dengan kolom AQI dan 6 polutan (CO,no2, o3, pm10, pm25, so2), lengkap dengan keterangan waktu. Tidak ada nilai yang hilang (NA) pada data ini.
+
+```{r}
+data <- data[order(data$ts), ]
+rownames(data) <- NULL
+data$t <- 1:nrow(data)
+head(data[, c("t", "datetime", "AQI", "CO", "no2", "o3", "pm10", "pm25", "so2")])
+```
+
+## Pemilihan Peubah Independen (X)
+
+Lihat dulu polutan mana yang paling berkaitan erat dengan AQI lewat korelasi Pearson-nya.
+
+```{r}
+kor <- cor(data[, c("AQI", "CO", "no2", "o3", "pm10", "pm25", "so2")])
+round(kor["AQI", ], 3)
+```
+
+Terlihat bahwa **O3 (ozon)** memiliki korelasi paling tinggi dengan AQI, yaitu sekitar 0.97. Karena itu, O3 dipilih sebagai peubah independen (X) untuk pemodelan lag.
+
+```{r, fig.width=9, fig.height=4}
+ggplot(data, aes(x = t)) +
+  geom_line(aes(y = AQI, color = "AQI"), linewidth = 1) +
+  geom_line(aes(y = o3, color = "O3"), linewidth = 1) +
+  scale_color_manual(values = c("AQI" = "firebrick", "O3" = "steelblue")) +
+  labs(title = "Perkembangan AQI dan O3 per Jam di New Delhi",
+       x = "Jam ke-", y = "Nilai", color = "Peubah") +
+  theme_minimal()
+```
+
+Dari plot di atas terlihat pola AQI dan O3 bergerak searah dan hampir berimpit satu sama lain. Ini konsisten dengan nilai korelasi yang sangat tinggi tadi, dan menjadi alasan kuat kenapa O3 relevan  dipakai untuk menjelaskan pergerakan AQI.
+
+# Pembagian Data (Train-Test Split)
+
+Data dibagi secara berurutan menjadi 60 jam pertama sebagai data latih dan 12 jam terakhir sebagai data uji, kurang lebih rasio 83:17.
+
+```{r}
+n <- nrow(data)
+n_test <- 12
+n_train <- n - n_test
+
+train <- data[1:n_train, ]
+test  <- data[(n_train + 1):n, ]
+
+cat("Jumlah data latih :", nrow(train), "\n")
+cat("Jumlah data uji    :", nrow(test), "\n")
+```
+
+Selanjutnya data latih diubah menjadi objek time series agar bisa
+digunakan oleh fungsi `dynlm()` dan operator lag `L()`.
+
+```{r}
+train.ts <- ts(train[, c("AQI", "o3")])
+data.ts  <- ts(data[, c("AQI", "o3")])
+```
+
+# Model 1: Koyck
+
+Model Koyck mengasumsikan bahwa pengaruh X terhadap Y semakin lama semakin kecil seiring bertambahnya jarak lag, dan hal ini direpresentasikan lewat satu lag dari peubah dependen itu sendiri:
+
+$$Y_t = a(1-\lambda) + \beta_0 X_t + \lambda Y_{t-1} + v_t$$
+
+Model ini bisa diduga langsung dengan OLS biasa dalam bentuk regresi
+$Y_t$ terhadap $X_t$ dan $Y_{t-1}$.
+
+```{r}
+model.koyck <- dynlm(AQI ~ o3 + L(AQI), data = train.ts)
+summary(model.koyck)
+```
+
+Baik peubah `o3` maupun `L(AQI)` memiliki p-value jauh di bawah 0.05, artinya keduanya berpengaruh signifikan terhadap AQI. Model yang terbentuk adalah:
+
+$$\hat{AQI_t} = -0.6690 + 0.3693\,O3_t + 0.2244\,AQI_{t-1}$$
+
+Nilai koefisien $\lambda = 0.2244$ menunjukkan bahwa pengaruh AQI satu jam sebelumnya terhadap AQI saat ini relatif kecil, artinya AQI di kasus ini lebih banyak ditentukan oleh kondisi O3 saat itu juga dibanding "kelembaman" dari nilai AQI sebelumnya.
+
+```{r}
+AIC(model.koyck); BIC(model.koyck)
+```
+
+# Model 2: Distributed Lag Model (DLM)
+
+## Pemodelan Awal (q = 1)
+
+Model DLM menjelaskan AQI menggunakan X pada waktu sekarang ditambah
+beberapa lag dari X, tanpa melibatkan lag dari Y itu sendiri.
+
+```{r}
+model.dlm <- dynlm(AQI ~ o3 + L(o3), data = train.ts)
+summary(model.dlm)
+```
+
+Hasilnya menarik, koefisien `o3` (X saat ini) sangat signifikan
+(p-value < 0.001), tapi `L(o3)` (X satu jam sebelumnya) tidak signifikan (p-value = 0.666). Artinya AQI di data ini bereaksi hampir seketika terhadap perubahan O3, tanpa efek tunda yang berarti.
+
+## Mencari Lag Optimum
+
+Supaya tidak sekadar menebak q = 1, kita coba beberapa panjang lag (q = 1 sampai 8) dan bandingkan AIC-nya. Supaya perbandingan adil, seluruh model diestimasi pada rentang waktu yang sama (baris data yang sama), karena kalau tidak disamakan, model dengan lag lebih banyak otomatis kehilangan lebih banyak observasi di awal sehingga AIC-nya tidak bisa dibandingkan langsung.
+
+```{r}
+maxlag_dlm <- 8
+aic_dlm <- numeric(maxlag_dlm)
+for (q in 1:maxlag_dlm) {
+  frm <- as.formula(paste("AQI ~", paste(c("o3", paste0("L(o3,", 1:q, ")")), collapse = " + ")))
+  m <- dynlm(frm, data = train.ts, start = maxlag_dlm + 1)
+  aic_dlm[q] <- AIC(m)
+}
+names(aic_dlm) <- paste0("q=", 1:maxlag_dlm)
+round(aic_dlm, 3)
+```
+
+```{r}
+q_opt <- which.min(aic_dlm)
+cat("Lag optimum berdasarkan AIC adalah q =", q_opt, "\n")
+```
+
+Lag optimum ternyata jatuh pada **q = 1**. Ini masuk akal karena lag pertama O3 saja sudah tidak signifikan, jadi menambah lag lebih
+jauh lagi hanya menambah kompleksitas tanpa menambah informasi yang
+berguna. Karena itu, `model.dlm` di atas (q = 1) langsung dipakai sebagai model DLM final.
+
+# Model 3: Autoregressive Distributed Lag (ARDL)
+
+Model ARDL menggabungkan lag dari X dan lag dari Y sekaligus, sehingga lebih fleksibel dibanding Koyck maupun DLM.
+
+## Pemodelan Awal ARDL(1,1)
+
+```{r}
+model.ardl <- dynlm(AQI ~ o3 + L(o3) + L(AQI), data = train.ts)
+summary(model.ardl)
+```
+
+Ketiga peubah (`o3`, `L(o3)`, `L(AQI)`) signifikan pada taraf nyata 5%. Model yang terbentuk:
+
+$$\hat{AQI_t} = -0.0691 + 0.4798\,O3_t - 0.2251\,O3_{t-1} + 0.4502\,AQI_{t-1}$$
+
+Menariknya koefisien $O3_{t-1}$ bertanda negatif, mengindikasikan adanya sedikit efek "koreksi" begitu pengaruh kenaikan O3 pada jam sebelumnya sudah tertangkap lewat AQI yang saat itu juga naik.
+
+## Mencari Order (p, q) Optimum
+
+```{r}
+maxlag_ardl <- 4
+grid <- expand.grid(p = 0:maxlag_ardl, q = 0:maxlag_ardl)
+grid$AIC <- NA
+for (i in 1:nrow(grid)) {
+  p <- grid$p[i]; q <- grid$q[i]
+  xterms <- if (p > 0) paste0("L(o3,", 1:p, ")") else NULL
+  yterms <- if (q > 0) paste0("L(AQI,", 1:q, ")") else NULL
+  frm <- as.formula(paste("AQI ~", paste(c("o3", xterms, yterms), collapse = " + ")))
+  m <- tryCatch(dynlm(frm, data = train.ts, start = maxlag_ardl + 1), error = function(e) NULL)
+  if (!is.null(m)) grid$AIC[i] <- AIC(m)
+}
+grid <- grid[order(grid$AIC), ]
+head(grid, 8)
+```
+
+Kombinasi AIC terkecil justru ada pada **p = 0, q = 1**, yang sebenarnya sama persis bentuknya dengan model Koyck yang sudah dibuat di awal (hanya mengandalkan lag Y, tanpa lag X). Ini konsisten dengan temuan di DLM, karena O3 pada lag pertama memang tidak banyak menambah informasi.  
+Supaya tetap punya model ARDL yang murni menggabungkan lag X dan lag Y (sesuai definisi ARDL itu sendiri) untuk dibandingkan, tetap pakai
+ARDL(1,1) yang sudah dibuat sebagai model ARDL final, dan bahwa versi "paling ringkas menurut AIC" ternyata identik dengan model Koyck.
+
+# Perbandingan Formulasi dengan `dynlm` (gaya modul)
+
+```{r}
+cons_lm1 <- dynlm(AQI ~ o3 + L(o3), data = train.ts)          # DLM (q=1)
+cons_lm2 <- dynlm(AQI ~ o3 + L(AQI), data = train.ts)         # Koyck / AR(1)
+cons_lm3 <- dynlm(AQI ~ o3 + L(o3) + L(AQI), data = train.ts) # ARDL(1,1)
+cons_lm4 <- dynlm(AQI ~ o3 + L(o3) + L(o3, 2), data = train.ts) # DLM (q=2)
+```
+
+## Uji Encompassing
+
+Uji ini membandingkan apakah model yang lebih sederhana (M1 dan M2) sudah cukup memadai dibandingkan model gabungan (ME) yang memuat keduanya.
+
+```{r}
+encomptest(cons_lm1, cons_lm2)
+```
+
+Baris **M1 vs ME** menguji apakah penambahan lag Y ke Model 1 (DLM)
+memberi tambahan informasi yang berarti. P-value-nya kecil (< 0.001), artinya penambahan `L(AQI)` ke model DLM memberi peningkatan yang signifikan, jadi DLM saja belum cukup memadai.  
+  
+Baris M2 vs ME menguji apakah penambahan lag X (L(o3)) ke Model 2 (Koyck) memberi tambahan informasi. P-value-nya sangat kecil (< 0,05), artinya penambahan L(o3) ke model Koyck memberi peningkatan yang signifikan. Jadi, model Koyck saja belum cukup memadai.
+
+## Uji Autokorelasi Residual (Durbin-Watson)
+
+```{r}
+dwtest(cons_lm1)
+dwtest(cons_lm2)
+dwtest(cons_lm3)
+```
+
+Model 1 (cons_lm1): Nilai DW=1,0862 dengan p-value (<0,05). Hal ini menunjukkan indikasi kuat adanya autokorelasi positif pada residual.  
+Model 2 (cons_lm2): Nilai DW=1,6151 dengan p-value (<0,05). Model ini masih mengalami autokorelasi positif pada taraf nyata 5%.  
+Model 3 (cons_lm3): Nilai DW=2,7567 dengan p-value (>0,05). Tidak ada bukti autokorelasi positif pada model ini.  
+
+## Uji Heteroskedastisitas (Breusch-Pagan)
+
+```{r}
+bptest(cons_lm1)
+bptest(cons_lm2)
+bptest(cons_lm3)
+```
+
+Jika p-value > 0.05 berarti tidak ada heteroskedastisitas. Model DLM
+(`cons_lm1`) lolos uji ini dengan p-value tinggi (0.75). Namun model Koyck dan ARDL (`cons_lm2` dan `cons_lm3`) justru terindikasi mengandung heteroskedastisitas (p-value masing-masing jauh di bawah 0.05). Artinya ragam residual pada kedua model ini tidak konstan sepanjang waktu.
+
+## Uji Normalitas Residual (Shapiro-Wilk)
+
+```{r}
+shapiro.test(residuals(cons_lm1))
+shapiro.test(residuals(cons_lm2))
+shapiro.test(residuals(cons_lm3))
+```
+
+H0: residual berdistribusi normal. Model DLM dan Koyck menolak H0, artinya residual keduanya belum normal. Sebaliknya, model ARDL(1,1) memiliki p-value=0.085 (>0.05), sehingga H0 gagal ditolak, residual ARDL sudah bisa dianggap berdistribusi normal. Ini menjadi salah satu keunggulan tambahan model ARDL dibanding dua model lainnya.
+
+# Peramalan dan Akurasi
+
+## Fungsi Peramalan
+
+Karena tidak memakai `dLagM::forecast()`, peramalan dibuat manual mengikuti logika yang sama: nilai lag Y yang dipakai untuk meramalkan periode berikutnya adalah **hasil ramalan sebelumnya** (bukan nilai aktual), supaya konsisten dengan cara kerja peramalan h-langkah ke depan yang sesungguhnya. Nilai X (O3) pada periode uji dianggap sudah diketahui.
+
+```{r}
+forecast_koyck <- function(model, x_future, y_last) {
+  b <- coef(model)
+  h <- length(x_future)
+  yhat <- numeric(h)
+  y_prev <- y_last
+  for (i in 1:h) {
+    yhat[i] <- b["(Intercept)"] + b["o3"] * x_future[i] + b["L(AQI)"] * y_prev
+    y_prev <- yhat[i]
+  }
+  yhat
+}
+
+forecast_dlm <- function(model, x_future, x_last) {
+  b <- coef(model)
+  h <- length(x_future)
+  yhat <- numeric(h)
+  x_prev <- x_last
+  for (i in 1:h) {
+    yhat[i] <- b["(Intercept)"] + b["o3"] * x_future[i] + b["L(o3)"] * x_prev
+    x_prev <- x_future[i]
+  }
+  yhat
+}
+
+forecast_ardl <- function(model, x_future, x_last, y_last) {
+  b <- coef(model)
+  h <- length(x_future)
+  yhat <- numeric(h)
+  x_prev <- x_last; y_prev <- y_last
+  for (i in 1:h) {
+    yhat[i] <- b["(Intercept)"] + b["o3"] * x_future[i] + b["L(o3)"] * x_prev + b["L(AQI)"] * y_prev
+    x_prev <- x_future[i]; y_prev <- yhat[i]
+  }
+  yhat
+}
+```
+
+## Hasil Peramalan 12 Jam ke Depan
+
+```{r}
+x_future <- test$o3
+x_last <- train$o3[n_train]
+y_last <- train$AQI[n_train]
+
+fore.koyck <- forecast_koyck(model.koyck, x_future, y_last)
+fore.dlm   <- forecast_dlm(model.dlm, x_future, x_last)
+fore.ardl  <- forecast_ardl(model.ardl, x_future, x_last, y_last)
+
+hasil <- data.frame(
+  Jam_ke   = test$t,
+  Aktual   = round(test$AQI, 2),
+  Koyck    = round(fore.koyck, 2),
+  DLM      = round(fore.dlm, 2),
+  ARDL     = round(fore.ardl, 2)
+)
+hasil
+```
+
+Sekilas terlihat ketiga model mampu mengikuti pola kenaikan AQI di akhir periode data uji dengan cukup baik, dan nilainya berdekatan satu sama lain karena memang ketiganya sama-sama mengandalkan O3 sebagai basis peramalan.
+
+## Akurasi pada Data Uji (Out-of-Sample)
+
+```{r}
+akurasi_test <- data.frame(
+  Model = c("Koyck", "DLM", "ARDL"),
+  MAPE  = c(MAPE(fore.koyck, test$AQI), MAPE(fore.dlm, test$AQI), MAPE(fore.ardl, test$AQI)),
+  RMSE  = c(RMSE(fore.koyck, test$AQI), RMSE(fore.dlm, test$AQI), RMSE(fore.ardl, test$AQI)),
+  MAE   = c(MAE(fore.koyck, test$AQI), MAE(fore.dlm, test$AQI), MAE(fore.ardl, test$AQI))
+)
+akurasi_test
+```
+
+## Akurasi pada Data Latih (In-Sample / Goodness of Fit)
+
+```{r}
+gof <- function(fit, actual) {
+  data.frame(MAE = MAE(fit, actual), MAPE = MAPE(fit, actual), RMSE = RMSE(fit, actual))
+}
+actual_train <- train$AQI[2:n_train]
+
+akurasi_train <- rbind(
+  cbind(Model = "Koyck", gof(fitted(model.koyck), actual_train)),
+  cbind(Model = "DLM",   gof(fitted(model.dlm), actual_train)),
+  cbind(Model = "ARDL",  gof(fitted(model.ardl), actual_train))
+)
+akurasi_train
+```
+
+# Perbandingan Model dan Penentuan Model Terbaik
+
+```{r}
+akurasi_test[order(akurasi_test$MAPE), ]
+```
+
+Berdasarkan nilai MAPE pada data uji, urutan performa model dari yang terbaik adalah **ARDL(1,1) > DLM > Koyck**, meskipun perbedaan tidak terlalu jauh (semua di bawah 2%, jadi sama-sama tergolong model yang sangat akurat menurut kriteria Lewis, di mana MAPE < 10% berarti kemampuan peramalan sangat baik). Model ARDL(1,1) unggul karena memanfaatkan informasi paling lengkap, yaitu O3 saat ini, O3 satu jam sebelumnya, dan AQI satu jam sebelumnya sekaligus, sehingga bisa menangkap dinamika AQI paling detail dibanding dua model lainnya.
+
+## Visualisasi Perbandingan Hasil Peramalan
+
+```{r, fig.width=9, fig.height=5}
+plot_df <- data.frame(
+  Jam    = rep(test$t, 4),
+  Nilai  = c(test$AQI, fore.koyck, fore.dlm, fore.ardl),
+  Model  = rep(c("Aktual", "Koyck", "DLM", "ARDL"), each = length(test$t))
+)
+
+ggplot(plot_df, aes(x = Jam, y = Nilai, color = Model, linetype = Model)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Aktual" = "black", "Koyck" = "red",
+                                 "DLM" = "blue", "ARDL" = "darkgreen")) +
+  labs(title = "Perbandingan Hasil Peramalan AQI vs Data Aktual",
+       subtitle = "12 jam terakhir (data uji)",
+       x = "Jam ke-", y = "AQI") +
+  theme_minimal()
+```
+
+Dari grafik terlihat garis ketiga model (merah, biru, hijau) nyaris
+berimpit dengan garis aktual (hitam), yang menegaskan bahwa ketiganya sama-sama mampu mengikuti tren kenaikan AQI di 12 jam terakhir. Garis ARDL (hijau) tampak paling menempel ke garis aktual, sejalan dengan nilai MAPE dan RMSE-nya yang paling kecil di antara ketiganya.
+
+# Kesimpulan
+
+1. Dari enam polutan yang tersedia, **O3** dipilih sebagai peubah independen (X) karena memiliki korelasi paling tinggi dengan AQI (sekitar 0.97).  
+2. Ketiga model lag (Koyck, DLM, ARDL) sama-sama menghasilkan model yang signifikan secara statistik dan memiliki akurasi peramalan yang sangat baik (MAPE jauh di bawah 10%).  
+3. Pencarian lag optimum menunjukkan bahwa hubungan AQI dan O3 di data ini bersifat cukup instan, tanpa efek tunda yang panjang, ditandai dengan lag optimum DLM yang jatuh pada q = 1 dan ARDL yang "paling ringkas" menurut AIC berbentuk model Koyck murni (p=0, q=1).  
+4. Model terbaik berdasarkan metrik akurasi (MAPE dan RMSE) pada data uji adalah **ARDL(1,1)**, karena mampu memanfaatkan sekaligus informasi lag dari X dan lag dari Y sehingga peramalannya paling mendekati nilai aktual dibanding Koyck dan DLM.  
+5. Berdasarkan evaluasi diagnostik residual, Model ARDL(1,1) unggul dibanding dua model lainnya. Model ini merupakan satu-satunya yang berhasil membebaskan residual dari masalah autokorelasi (DW p>0.05), dan juga satu-satunya yang residualnya sudah bisa dianggap berdistribusi normal (Shapiro-Wilk p=0.085 > 0.05). Sementara itu, Model Koyck dan DLM sama-sama masih terindikasi autokorelasi positif serta residual yang belum normal. Namun, dari sisi heteroskedastisitas, justru Model DLM yang paling baik (lolos uji Breusch-Pagan dengan p=0.75), sedangkan Koyck dan ARDL masih menunjukkan indikasi heteroskedastisitas. Oleh karena itu, meskipun ARDL(1,1) menjadi model terbaik secara keseluruhan (akurasi tertinggi, bebas autokorelasi, residual normal), pengembangan selanjutnya tetap dapat mempertimbangkan transformasi variabel (misalnya logaritma) atau pemodelan volatilitas kondisional (seperti GARCH) untuk mengatasi heteroskedastisitas, terutama jika data time series yang digunakan lebih panjang.
