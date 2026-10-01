@@ -2849,8 +2849,6 @@ Bulanan (1980-2025)</h1>
 <pre class="r"><code>knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.align = &quot;center&quot;, fig.width = 9, fig.height = 5)
 
-# ---- Paket yang dibutuhkan (install dulu jika belum) ----
-# install.packages(c(&quot;readxl&quot;,&quot;forecast&quot;,&quot;tseries&quot;,&quot;lmtest&quot;,&quot;MASS&quot;,&quot;TSA&quot;,&quot;knitr&quot;))
 library(readxl)</code></pre>
 <pre><code>## Warning: package &#39;readxl&#39; was built under R version 4.5.3</code></pre>
 <pre class="r"><code>library(forecast)</code></pre>
@@ -2871,8 +2869,7 @@ library(readxl)</code></pre>
 ##     as.Date, as.Date.numeric</code></pre>
 <pre class="r"><code>library(knitr)</code></pre>
 <pre><code>## Warning: package &#39;knitr&#39; was built under R version 4.5.1</code></pre>
-<pre class="r"><code># ---- Fungsi bantuan untuk interpretasi otomatis ----
-pf  &lt;- function(p) ifelse(p &lt; 0.001, &quot;&lt; 0,001&quot;, format(round(p, 4), decimal.mark = &quot;,&quot;))
+<pre class="r"><code>pf  &lt;- function(p) ifelse(p &lt; 0.001, &quot;&lt; 0,001&quot;, format(round(p, 4), decimal.mark = &quot;,&quot;))
 fm  &lt;- function(x, d = 2) format(round(x, d), decimal.mark = &quot;,&quot;, big.mark = &quot;.&quot;)
 kes &lt;- function(p, alpha = 0.05) ifelse(p &gt; alpha, &quot;Terpenuhi&quot;, &quot;Tidak terpenuhi&quot;)
 kat_mape &lt;- function(m) {
@@ -2900,8 +2897,7 @@ ADF) dan dalam ragam (Box-Cox)</li>
 </div>
 <div id="data" class="section level1" number="2">
 <h1><span class="header-section-number">2</span> Data</h1>
-<pre class="r"><code># Letakkan file xlsx di folder yang sama dengan file Rmd ini
-dat &lt;- read_excel(&quot;harga_emas_bulanan_1980_2025.xlsx&quot;)
+<pre class="r"><code>dat &lt;- read_excel(&quot;harga_emas_bulanan_1980_2025.xlsx&quot;)
 colnames(dat) &lt;- c(&quot;Periode&quot;, &quot;Harga&quot;)
 dat$Periode &lt;- as.character(dat$Periode)
 
@@ -3704,9 +3700,6 @@ baik.</p>
 <div id="peramalan-12-bulan-ke-depan-tahun-2026" class="section level2" number="10.1">
 <h2><span class="header-section-number">10.1</span> Peramalan 12 Bulan
 ke Depan (Tahun 2026)</h2>
-<p>Sebagai tambahan, model dengan orde yang sama diduga ulang
-menggunakan <strong>seluruh data</strong> (latih + uji) untuk meramal
-Januari - Desember 2026.</p>
 <pre class="r"><code>final_full &lt;- Arima(emas, order = ord_best, lambda = lam_arg, method = &quot;ML&quot;)
 fc_next    &lt;- forecast(final_full, h = 12)
 

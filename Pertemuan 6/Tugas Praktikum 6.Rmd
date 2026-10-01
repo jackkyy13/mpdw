@@ -15,15 +15,12 @@ output:
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.align = "center", fig.width = 9, fig.height = 5)
 
-# ---- Paket yang dibutuhkan (install dulu jika belum) ----
-# install.packages(c("readxl","forecast","tseries","lmtest","MASS","TSA","knitr"))
 library(readxl)
 library(forecast)
 library(tseries)
 library(lmtest)
 library(knitr)
 
-# ---- Fungsi bantuan untuk interpretasi otomatis ----
 pf  <- function(p) ifelse(p < 0.001, "< 0,001", format(round(p, 4), decimal.mark = ","))
 fm  <- function(x, d = 2) format(round(x, d), decimal.mark = ",", big.mark = ".")
 kes <- function(p, alpha = 0.05) ifelse(p > alpha, "Terpenuhi", "Tidak terpenuhi")
@@ -48,7 +45,6 @@ Tugas memuat pemodelan **ARIMA (Autoregressive Integrated Moving Average)** pada
 # Data
 
 ```{r}
-# Letakkan file xlsx di folder yang sama dengan file Rmd ini
 dat <- read_excel("harga_emas_bulanan_1980_2025.xlsx")
 colnames(dat) <- c("Periode", "Harga")
 dat$Periode <- as.character(dat$Periode)
@@ -396,8 +392,6 @@ mape_naive <- akurasi["Naive", "MAPE"]
 **Interpretasi.** Pada data uji, model **`r best_name`** menghasilkan **RMSE = `r fm(akurasi["ARIMA","RMSE"])`**, **MAE = `r fm(akurasi["ARIMA","MAE"])`**, dan **MAPE = `r fm(mape_arima)`%**. Berdasarkan kriteria MAPE (< 10% sangat baik, 10-20% baik, 20-50% cukup, > 50% kurang baik), akurasi peramalan tergolong **`r kat_mape(mape_arima)`**. Dibandingkan metode *naive* (MAPE = `r fm(mape_naive)`%), model ARIMA `r ifelse(mape_arima < mape_naive, "memberikan galat yang lebih kecil sehingga lebih baik.", "tidak lebih baik, yang menunjukkan bahwa harga emas bulanan sangat mendekati pola *random walk* dan nilai tambah model ARIMA terbatas, terutama karena lonjakan harga pada periode uji berada di luar pola data latih.")`
 
 ## Peramalan 12 Bulan ke Depan (Tahun 2026)
-
-Sebagai tambahan, model dengan orde yang sama diduga ulang menggunakan **seluruh data** (latih + uji) untuk meramal Januari - Desember 2026.
 
 ```{r}
 final_full <- Arima(emas, order = ord_best, lambda = lam_arg, method = "ML")
